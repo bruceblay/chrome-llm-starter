@@ -1,4 +1,4 @@
-import { Readability } from "@mozilla/readability"
+// Remove AI SDK imports from background script to avoid service worker import issues
 
 // Listen for messages from popup and content scripts
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -52,8 +52,8 @@ async function handleSummarizePage(request: any, sendResponse: (response: any) =
       return
     }
 
-    // Generate summary using LLM
-    const summaryResult = await generateSummary(pageContent, title, settings)
+    // Generate summary using LLM (offload to a different approach to avoid service worker issues)
+    const summaryResult = await generateSummaryViaFetch(pageContent, title, settings)
     
     const processingTime = Date.now() - startTime
 
@@ -85,10 +85,10 @@ async function handleSummarizePage(request: any, sendResponse: (response: any) =
 
 async function getPageContent(tabId: number): Promise<string | null> {
   try {
-    // Inject content script to get page content
+    // Inject content script to get page content using the same pattern as vibe-sum
     const results = await chrome.scripting.executeScript({
       target: { tabId },
-      function: extractPageContent
+      func: extractPageContent
     })
 
     if (results && results[0] && results[0].result) {
@@ -102,30 +102,68 @@ async function getPageContent(tabId: number): Promise<string | null> {
   }
 }
 
-// Function that runs in the page context to extract content
+// Function that runs in the page context to extract content - following vibe-sum pattern
 function extractPageContent(): string {
   try {
-    // Use Readability to extract main content
-    const documentClone = document.cloneNode(true) as Document
-    const reader = new Readability(documentClone)
-    const article = reader.parse()
-
-    if (article && article.textContent) {
-      // Return cleaned text content
-      return article.textContent.trim()
+    console.log('📄 Extracting page content...')
+    
+    // Similar to vibe-sum's extractPageContext but focused on getting clean text content
+    const contentSources = [
+      'main',
+      '[role="main"]', 
+      'article',
+      '.content',
+      '#content',
+      '.post-content',
+      '.entry-content',
+      '.article-content',
+      'body'
+    ]
+    
+    let bestContent = ''
+    
+    // Try each selector to find the main content
+    for (const selector of contentSources) {
+      try {
+        const element = document.querySelector(selector)
+        if (element) {
+          // Clone the element to avoid modifying the original page
+          const clone = element.cloneNode(true) as Element
+          
+          // Remove noise elements
+          const noise = clone.querySelectorAll('script, style, nav, header, footer, aside, .advertisement, .ads, .sidebar, .menu, .navigation, [class*="comment"], [id*="comment"]')
+          noise.forEach(el => el.remove())
+          
+          const textContent = clone.textContent || ''
+          if (textContent.trim().length > bestContent.length) {
+            bestContent = textContent.trim()
+          }
+          
+          // If we found substantial content, use it
+          if (bestContent.length > 500) break
+        }
+      } catch (e) {
+        console.warn(`Error with selector ${selector}:`, e)
+      }
     }
-
-    // Fallback: get all text content
-    const textContent = document.body.innerText || document.body.textContent || ''
-    return textContent.trim()
+    
+    // Clean up the content
+    const cleanContent = bestContent
+      .replace(/\s+/g, ' ') // Normalize whitespace
+      .replace(/\n{3,}/g, '\n\n') // Limit consecutive newlines
+      .trim()
+    
+    console.log(`📄 Extracted ${cleanContent.length} characters of content`)
+    return cleanContent
+    
   } catch (error) {
     console.error('Error in extractPageContent:', error)
     // Final fallback
-    return document.body.innerText || document.body.textContent || ''
+    return document.body?.textContent?.replace(/\s+/g, ' ').trim() || ''
   }
 }
 
-async function generateSummary(content: string, title: string, settings: any) {
+async function generateSummaryViaFetch(content: string, title: string, settings: any) {
   const currentProvider = settings.providers[settings.currentProvider]
   
   // Truncate content if too long (keep first ~3000 words to stay within token limits)
@@ -150,144 +188,172 @@ Please provide your response in the following JSON format:
 Focus on the main ideas, key facts, and important takeaways. Keep the summary informative but brief.`
 
   try {
-    // Dynamic import based on provider
+    let apiResponse
+
+    // Use direct API calls to avoid service worker import issues
     if (settings.currentProvider === 'anthropic') {
-      const { generateText } = await import('ai')
-      const { createAnthropic } = await import('@ai-sdk/anthropic')
-      
-      const anthropic = createAnthropic({
-        apiKey: currentProvider.apiKey,
-        headers: { "anthropic-dangerous-direct-browser-access": "true" }
+      apiResponse = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': currentProvider.apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: currentProvider.model,
+          max_tokens: 500,
+          temperature: 0.7,
+          messages: [{
+            role: 'user',
+            content: prompt
+          }]
+        })
       })
       
-      const model = anthropic(currentProvider.model)
+      if (!apiResponse.ok) {
+        throw new Error(`Anthropic API error: ${apiResponse.status} ${apiResponse.statusText}`)
+      }
       
-      const result = await generateText({
-        model,
-        prompt,
-        maxTokens: 500,
-        temperature: 0.7
-      })
+      const data = await apiResponse.json()
+      const text = data.content[0].text
 
       // Try to parse JSON response
       try {
-        const parsed = JSON.parse(result.text)
+        const parsed = JSON.parse(text)
         return {
           ...parsed,
           wordCount
         }
       } catch {
-        // If JSON parsing fails, return a basic response
         return {
-          summary: result.text,
+          summary: text,
           sentiment: 'neutral',
           keyThemes: [],
           wordCount
         }
       }
-    }
-
-    if (settings.currentProvider === 'openai') {
-      const { generateText } = await import('ai')
-      const { createOpenAI } = await import('@ai-sdk/openai')
-      
-      const openai = createOpenAI({
-        apiKey: currentProvider.apiKey,
-        dangerouslyAllowBrowser: true
+    } else if (settings.currentProvider === 'openai') {
+      apiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentProvider.apiKey}`
+        },
+        body: JSON.stringify({
+          model: currentProvider.model,
+          messages: [{
+            role: 'user',
+            content: prompt
+          }],
+          max_tokens: 500,
+          temperature: 0.7
+        })
       })
       
-      const model = openai(currentProvider.model)
+      if (!apiResponse.ok) {
+        throw new Error(`OpenAI API error: ${apiResponse.status} ${apiResponse.statusText}`)
+      }
       
-      const result = await generateText({
-        model,
-        prompt,
-        maxTokens: 500,
-        temperature: 0.7
-      })
+      const data = await apiResponse.json()
+      const text = data.choices[0].message.content
 
       try {
-        const parsed = JSON.parse(result.text)
+        const parsed = JSON.parse(text)
         return {
           ...parsed,
           wordCount
         }
       } catch {
         return {
-          summary: result.text,
+          summary: text,
           sentiment: 'neutral',
           keyThemes: [],
           wordCount
         }
       }
-    }
-
-    if (settings.currentProvider === 'google') {
-      const { generateText } = await import('ai')
-      const { createGoogleGenerativeAI } = await import('@ai-sdk/google')
-      
-      const google = createGoogleGenerativeAI({
-        apiKey: currentProvider.apiKey
+    } else if (settings.currentProvider === 'google') {
+      apiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentProvider.model}:generateContent?key=${currentProvider.apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: prompt
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 500
+          }
+        })
       })
       
-      const model = google(currentProvider.model)
+      if (!apiResponse.ok) {
+        throw new Error(`Google API error: ${apiResponse.status} ${apiResponse.statusText}`)
+      }
       
-      const result = await generateText({
-        model,
-        prompt,
-        maxTokens: 500,
-        temperature: 0.7
-      })
+      const data = await apiResponse.json()
+      const text = data.candidates[0].content.parts[0].text
 
       try {
-        const parsed = JSON.parse(result.text)
+        const parsed = JSON.parse(text)
         return {
           ...parsed,
           wordCount
         }
       } catch {
         return {
-          summary: result.text,
+          summary: text,
           sentiment: 'neutral',
           keyThemes: [],
           wordCount
         }
       }
-    }
-
-    if (settings.currentProvider === 'xai') {
-      const { generateText } = await import('ai')
-      const { createXai } = await import('@ai-sdk/xai')
-      
-      const xai = createXai({
-        apiKey: currentProvider.apiKey
+    } else if (settings.currentProvider === 'xai') {
+      apiResponse = await fetch('https://api.x.ai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentProvider.apiKey}`
+        },
+        body: JSON.stringify({
+          model: currentProvider.model,
+          messages: [{
+            role: 'user',
+            content: prompt
+          }],
+          max_tokens: 500,
+          temperature: 0.7
+        })
       })
       
-      const model = xai(currentProvider.model)
+      if (!apiResponse.ok) {
+        throw new Error(`xAI API error: ${apiResponse.status} ${apiResponse.statusText}`)
+      }
       
-      const result = await generateText({
-        model,
-        prompt,
-        maxTokens: 500,
-        temperature: 0.7
-      })
+      const data = await apiResponse.json()
+      const text = data.choices[0].message.content
 
       try {
-        const parsed = JSON.parse(result.text)
+        const parsed = JSON.parse(text)
         return {
           ...parsed,
           wordCount
         }
       } catch {
         return {
-          summary: result.text,
+          summary: text,
           sentiment: 'neutral',
           keyThemes: [],
           wordCount
         }
       }
+    } else {
+      throw new Error('Unsupported provider')
     }
-
-    throw new Error('Unsupported provider')
   } catch (error) {
     console.error('Error generating summary:', error)
     throw error
