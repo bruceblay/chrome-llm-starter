@@ -1,0 +1,64 @@
+{
+  "name": "chrome-llm-starter",
+  "displayName": "Chrome LLM Starter",
+  "version": "0.1.0",
+  "description": "A starting point for building Chrome extensions that utilize Vercel's AI SDK to connect to LLM providers",
+  "author": "Bruce Blay <bruceblay@gmail.com>",
+  "scripts": {
+    "dev": "plasmo dev --no-hmr",
+    "dev-hmr": "plasmo dev",
+    "build": "plasmo build",
+    "package": "plasmo package"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.12",
+    "@ai-sdk/google": "^2.0.12",
+    "@ai-sdk/openai": "^2.0.24",
+    "@ai-sdk/xai": "^2.0.16",
+    "@anthropic-ai/sdk": "^0.61.0",
+    "@heroicons/react": "^2.2.0",
+    "@mozilla/readability": "^0.6.0",
+    "@radix-ui/react-label": "^2.1.7",
+    "@radix-ui/react-select": "^2.2.6",
+    "@radix-ui/react-separator": "^1.1.7",
+    "@radix-ui/react-slot": "^1.2.3",
+    "@radix-ui/react-tabs": "^1.1.13",
+    "ai": "^5.0.32",
+    "autoprefixer": "^10.4.21",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "idb-keyval": "^6.2.2",
+    "lucide-react": "^0.542.0",
+    "plasmo": "^0.90.5",
+    "postcss": "^8.5.6",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tailwind-merge": "^3.3.1",
+    "tailwindcss": "^3.4.17",
+    "turndown": "^7.2.1",
+    "turndown-plugin-gfm": "^1.0.2",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@ianvs/prettier-plugin-sort-imports": "4.1.1",
+    "@types/chrome": "0.0.258",
+    "@types/node": "20.11.5",
+    "@types/react": "18.2.48",
+    "@types/react-dom": "18.2.18",
+    "prettier": "3.2.4",
+    "typescript": "5.3.3"
+  },
+  "manifest": {
+    "permissions": [
+      "activeTab",
+      "storage",
+      "scripting"
+    ],
+    "host_permissions": [
+      "https://generativelanguage.googleapis.com/*",
+      "https://api.openai.com/*",
+      "https://api.anthropic.com/*",
+      "https://api.x.ai/*"
+    ]
+  }
+}
